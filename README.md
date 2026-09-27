@@ -36,33 +36,102 @@ across every distro below, so these are just the install commands:
 
 ## Setup (one line, run once)
 
-This does not install anything permanent or touch your `$PATH`. It adds a
-single `alias` line to your `~/.bashrc` that re-downloads `h2mm-auto.sh`
-fresh from GitHub every time you run it — so you always get the current
-version with zero update step — then runs it immediately.
+This downloads `h2mm-auto.sh` once to `~/.local/share/h2mm-auto/h2mm-auto.sh`
+and adds a single `alias` line to your `~/.bashrc` that runs *that local
+copy*, then runs it immediately.
 
-Safe to paste and run again any time (it won't duplicate the line in
-`.bashrc` on repeat runs):
+It deliberately does **not** re-download and execute the script fresh from
+GitHub on every run. An alias that does `bash <(curl ... | main branch)`
+means every future `hd2up` silently runs whatever is on `main` at that
+moment — if the repo (or my GitHub account) were ever compromised, or a bad
+change slipped in after you'd already looked at the script once, you'd
+re-execute it without ever knowing. Caching a local copy means new code
+from the repo only ever runs when you explicitly re-run this same setup
+line to pull it — an update is a deliberate action, not something that
+happens invisibly the next time you type `hd2up`.
+
+The alias is named `hd2up` (not `h2mm-auto`) on purpose, so it doesn't
+collide with the real `h2mm-auto` executable from the
+[Steam launch option](#running-it-from-a-steam-launch-option) setup below,
+if you end up using both.
+
+Safe to paste and run again any time — this is also how you update: it
+won't duplicate the alias line in `.bashrc`, but it does overwrite the
+local copy with whatever is currently on `main`:
 
 ```bash
-grep -qxF "alias h2mm-auto='bash <(curl -fsSL https://raw.githubusercontent.com/grenudi/h2mm-auto/main/h2mm-auto.sh)'" ~/.bashrc 2>/dev/null || echo "alias h2mm-auto='bash <(curl -fsSL https://raw.githubusercontent.com/grenudi/h2mm-auto/main/h2mm-auto.sh)'" >> ~/.bashrc; source ~/.bashrc; h2mm-auto
+mkdir -p ~/.local/share/h2mm-auto && curl -fsSL https://raw.githubusercontent.com/grenudi/h2mm-auto/main/h2mm-auto.sh -o ~/.local/share/h2mm-auto/h2mm-auto.sh && chmod +x ~/.local/share/h2mm-auto/h2mm-auto.sh && (grep -qxF 'alias hd2up="$HOME/.local/share/h2mm-auto/h2mm-auto.sh"' ~/.bashrc 2>/dev/null || echo 'alias hd2up="$HOME/.local/share/h2mm-auto/h2mm-auto.sh"' >> ~/.bashrc); source ~/.bashrc; ~/.local/share/h2mm-auto/h2mm-auto.sh
 ```
 
-That single line: adds the alias if it isn't already there, reloads your
-`.bashrc` so it's active in the current shell too, and runs `h2mm-auto`
-immediately — removing old Bingus mods and installing the latest loader +
-Rows megapack in one go.
+That single line: downloads the script to its permanent local path, makes
+it executable, adds the alias if it isn't already there, reloads your
+`.bashrc`, and runs the script directly (not via `hd2up`) for this first
+time — removing old Bingus mods and installing the latest loader + Rows
+megapack in one go.
+
+It calls the script by its full path instead of `hd2up` here on purpose:
+bash resolves aliases when it parses a line, before running any of it, so
+an alias defined earlier in that *same* pasted line (by the `source` just
+before it) isn't recognized yet by the end of that same line — you'd get
+`hd2up: command not found` even though the alias was just added correctly.
+From the next terminal (or just typing `hd2up` again right after), it's
+there.
 
 ## After that
 
-Every new terminal session just has `h2mm-auto` ready to go — running it
-does the whole thing: remove old Bingus/Vanilla Plus mods, fetch the
-latest loader and Rows megapack, install both.
+Every new terminal session just has `hd2up` ready to go — running it does
+the whole thing: remove old Bingus/Vanilla Plus mods, fetch the latest
+loader and Rows megapack, install both.
 
 ```bash
-h2mm-auto
+hd2up
 ```
 
-Since the alias always re-fetches `h2mm-auto.sh` from `main` before running,
-there's nothing to update on your end — pushing changes to the repo is the
-only "release" step that exists.
+`hd2up` on its own always runs the local copy at
+`~/.local/share/h2mm-auto/h2mm-auto.sh` as-is — it does not check GitHub or
+update itself. To pull in script changes, re-run the one-liner from
+**Setup** above.
+
+## Running it from a Steam launch option
+
+Yes — chaining it in front of `%command%` works:
+
+```
+h2mm-auto; MANGOHUD=1 PROTON_USE_NTSYNC=1 gamemoderun %command% --use-d3d11
+```
+
+Steam runs the whole launch-options string through a shell, so `;` just
+means "run `h2mm-auto`, then (regardless of whether it succeeded) launch the
+game." That's deliberate — use `;`, not `&&`. If you're offline, or a
+release temporarily 404s, you still want the game to start.
+
+Two things the `hd2up` alias from **Setup** above won't give you here,
+because Steam's launch command doesn't source your `.bashrc` (it's not an
+interactive shell), so the alias is invisible to it — this is also exactly
+why the Steam-side install below uses the name `h2mm-auto` rather than
+`hd2up`; they're two separate, non-conflicting ways to run the same script:
+
+1. **Install it as a real command on your `$PATH`** instead of a shell
+   alias, one line, run once:
+
+   ```bash
+   mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/grenudi/h2mm-auto/main/h2mm-auto.sh -o ~/.local/bin/h2mm-auto && chmod +x ~/.local/bin/h2mm-auto
+   ```
+
+   `~/.local/bin` is on `$PATH` by default on essentially every modern
+   distro (unlike the alias, which only exists inside an interactive bash
+   shell). Same as `hd2up`, this is a plain local copy — it doesn't check
+   GitHub or update itself. Rerun the line above whenever you want to pull
+   in script changes.
+
+2. **Run it once, normally, in an actual terminal, before wiring it into
+   Steam.** The very first run needs to ask `h2mm` where your Helldivers 2
+   install lives, and that prompt has nowhere to go when launched from
+   Steam (no terminal attached). Once you've answered it a single time, the
+   answer is cached to `~/.config/h2mm/h2path` and every later run —
+   including from the Steam launch option — reuses it silently.
+
+After both of those, drop the line at the top of this section into
+**Properties → Launch Options** for the game and you're set. Worth knowing:
+it re-checks GitHub for new releases and can re-download/reinstall mods on
+every single launch, so it adds a few seconds before the game window opens.
