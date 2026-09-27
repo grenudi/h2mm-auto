@@ -20,12 +20,12 @@ H2MM_BIN="$BIN_DIR/h2mm"
 DOWNLOADS="${H2MM_AUTO_DOWNLOADS:-$HOME/Downloads}"
 DEPS=(curl jq unzip)
 
-# names we already know, straight from the release filenames — no need for
-# clever regexes to find them again in `h2mm list` output.
+# names we already know, straight from the release filenames — used to find
+# them again in `h2mm list` output (see mod_index_in_listing below).
 LOADER_NAME="Bingus-Shared-Loader"
 MEGAPACK_NAME="Vanilla-Plus-Megapack"
 
-# ---- Helldivers 2 theme: yellow ALL-CAPS headlines, tab-indented white steps --
+# ---- Helldivers 2 theme: yellow ALL-CAPS headlines, 2-space-indented white steps --
 if [ -t 2 ]; then
   HD2_YELLOW=$'\033[33m'
   HD2_WHITE=$'\033[37m'
@@ -102,19 +102,30 @@ fetch_h2mm() {
 fetch_loader()   { download "$(github_latest_asset "$LOADER_REPO" "$LOADER_PATTERN")" "$DOWNLOADS"; }
 fetch_megapack() { download "$(github_latest_asset "$MEGAPACK_REPO" "$MEGAPACK_PATTERN" "$MEGAPACK_FLAGS")" "$DOWNLOADS"; }
 
+mod_index_in_listing() { # <h2mm list output> <mod name> -> its index number, or nothing if not installed
+  local listing="$1" name="$2" line
+  line="$(grep -F -- "$name" <<< "$listing" | head -n1)"
+  [ -n "$line" ] || return 0
+  grep -oE '[0-9]+' <<< "$line" | head -n1
+}
+
 remove_previous_mods() { # <h2mm_bin>
-  local bin="$1" listing indices
+  local bin="$1" listing
   listing="$("$bin" list 2>/dev/null)" || { warn "recon sweep failed, skipping purge"; return 0; }
 
-  # We already know the exact mod names, so just match on those rather than
-  # a fragile catch-all regex. Grab the leading index number regardless of
-  # whether the CLI separates it with ". ", ") " or something else.
-  indices="$(awk -v a="$LOADER_NAME" -v b="$MEGAPACK_NAME" \
-    'index($0, a) || index($0, b) { match($0, /[0-9]+/); if (RSTART) print substr($0, RSTART, RLENGTH) }' \
-    <<< "$listing")"
-  [ -n "$indices" ] || { log "no legacy loadout detected — front is clear"; return 0; }
+  local loader_index megapack_index
+  loader_index="$(mod_index_in_listing "$listing" "$LOADER_NAME")"
+  megapack_index="$(mod_index_in_listing "$listing" "$MEGAPACK_NAME")"
 
-  for i in $(sort -rn <<< "$indices"); do
+  if [ -z "$loader_index" ] && [ -z "$megapack_index" ]; then
+    log "no legacy loadout detected — front is clear"
+    return 0
+  fi
+
+  # highest index first: uninstalling one reindexes the ones above it, so
+  # working top-down keeps the remaining index still valid.
+  local i
+  for i in $(printf '%s\n%s\n' "$loader_index" "$megapack_index" | grep -v '^$' | sort -rn); do
     log "purging asset #$i"
     h2mm_run "$bin" uninstall -i "$i" || die "purge failed on asset #$i"
   done
@@ -129,7 +140,7 @@ install_mod() { # <h2mm_bin> <zip_path>
 
 # ---- entry point: the whole thing, top to bottom ---------------------------
 main() {
-  section "H2MM-AUTO — FOR SUPER EARTH"
+  section "DEMOCRACY DELIVERED"
   ensure_dependencies
 
   local h2mm; h2mm="$(fetch_h2mm)"
@@ -143,7 +154,7 @@ main() {
   install_mod "$h2mm" "$loader"
   install_mod "$h2mm" "$megapack"
 
-  section "DEMOCRACY DELIVERED — MISSION SUCCESS"
+  section "MISSION SUCCESS"
 }
 
 main
