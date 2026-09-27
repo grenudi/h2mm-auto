@@ -1,5 +1,7 @@
 # h2mm-auto
 
+<img width="545" height="349" alt="image" src="https://github.com/user-attachments/assets/36239811-4432-4126-9fe0-7c7795690b7f" />
+
 A wrapper around [`h2mm-cli`](https://github.com/v4n00/h2mm-cli) that:
 
 - checks/acquires runtime dependencies (`curl`, `jq`, `unzip`)
