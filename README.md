@@ -50,10 +50,8 @@ from the repo only ever runs when you explicitly re-run this same setup
 line to pull it — an update is a deliberate action, not something that
 happens invisibly the next time you type `hd2up`.
 
-The alias is named `hd2up` (not `h2mm-auto`) on purpose, so it doesn't
-collide with the real `h2mm-auto` executable from the
-[Steam launch option](#running-it-from-a-steam-launch-option) setup below,
-if you end up using both.
+The alias is named `hd2up` rather than `h2mm-auto` just to keep it visibly
+distinct from the script's own filename in the alias definition below.
 
 Safe to paste and run again any time — this is also how you update: it
 won't duplicate the alias line in `.bashrc`, but it does overwrite the
@@ -94,44 +92,34 @@ update itself. To pull in script changes, re-run the one-liner from
 
 ## Running it from a Steam launch option
 
-Yes — chaining it in front of `%command%` works:
+Yes — chaining it in front of `%command%` works. No separate install needed:
+it reuses the exact same local copy the **Setup** one-liner already put at
+`~/.local/share/h2mm-auto/h2mm-auto.sh`, just called by its full path instead
+of through the `hd2up` alias — Steam's launch command isn't an interactive
+shell, so it never sources `.bashrc` and wouldn't see the alias anyway. No
+`$PATH`, no second copy of the script, no NixOS-vs-everyone-else PATH
+weirdness to work around, nothing to name-collide with `hd2up`.
 
 ```
-h2mm-auto; MANGOHUD=1 PROTON_USE_NTSYNC=1 gamemoderun %command% --use-d3d11
+~/.local/share/h2mm-auto/h2mm-auto.sh; MANGOHUD=1 PROTON_USE_NTSYNC=1 gamemoderun %command% --use-d3d11
 ```
 
 Steam runs the whole launch-options string through a shell, so `;` just
-means "run `h2mm-auto`, then (regardless of whether it succeeded) launch the
+means "run the script, then (regardless of whether it succeeded) launch the
 game." That's deliberate — use `;`, not `&&`. If you're offline, or a
 release temporarily 404s, you still want the game to start.
 
-Two things the `hd2up` alias from **Setup** above won't give you here,
-because Steam's launch command doesn't source your `.bashrc` (it's not an
-interactive shell), so the alias is invisible to it — this is also exactly
-why the Steam-side install below uses the name `h2mm-auto` rather than
-`hd2up`; they're two separate, non-conflicting ways to run the same script:
+One prerequisite: run the **Setup** one-liner above at least once, normally,
+in an actual terminal, before wiring this into Steam. That first run is also
+what makes `h2mm` ask where your Helldivers 2 install lives — a prompt that
+has nowhere to go when launched from Steam later (no terminal attached).
+Once you've answered it that one time, it's cached to `~/.config/h2mm/h2path`
+and every later run, including from the Steam launch option, reuses it
+silently. If you've already run `hd2up` at least once, you're already done —
+just paste the line above into **Properties → Launch Options** for the game.
 
-1. **Install it as a real command on your `$PATH`** instead of a shell
-   alias, one line, run once:
-
-   ```bash
-   mkdir -p ~/.local/bin && curl -fsSL https://raw.githubusercontent.com/grenudi/h2mm-auto/main/h2mm-auto.sh -o ~/.local/bin/h2mm-auto && chmod +x ~/.local/bin/h2mm-auto
-   ```
-
-   `~/.local/bin` is on `$PATH` by default on essentially every modern
-   distro (unlike the alias, which only exists inside an interactive bash
-   shell). Same as `hd2up`, this is a plain local copy — it doesn't check
-   GitHub or update itself. Rerun the line above whenever you want to pull
-   in script changes.
-
-2. **Run it once, normally, in an actual terminal, before wiring it into
-   Steam.** The very first run needs to ask `h2mm` where your Helldivers 2
-   install lives, and that prompt has nowhere to go when launched from
-   Steam (no terminal attached). Once you've answered it a single time, the
-   answer is cached to `~/.config/h2mm/h2path` and every later run —
-   including from the Steam launch option — reuses it silently.
-
-After both of those, drop the line at the top of this section into
-**Properties → Launch Options** for the game and you're set. Worth knowing:
-it re-checks GitHub for new releases and can re-download/reinstall mods on
-every single launch, so it adds a few seconds before the game window opens.
+Worth knowing: on every single launch it still checks the mod repos for new
+releases and can re-download/reinstall mods (that part always talks to
+GitHub — it's the actual point of the script), so it adds a few seconds
+before the game window opens. What it does *not* do anymore on every launch
+is re-fetch its own code — see **Setup** above.
