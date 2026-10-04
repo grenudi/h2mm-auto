@@ -117,13 +117,20 @@ shell, so it never sources `.bashrc` and wouldn't see the alias anyway. No
 weirdness to work around, nothing to name-collide with `hd2up`.
 
 ```
-~/.local/share/h2mm-auto/h2mm-auto.sh; MANGOHUD=1 PROTON_USE_NTSYNC=1 gamemoderun %command% --use-d3d11
+~/.local/share/h2mm-auto/h2mm-auto.sh; MANGOHUD=1 PROTON_USE_NTSYNC=1 gamemoderun game-performance %command% --use-d3d11
 ```
 
 Steam runs the whole launch-options string through a shell, so `;` just
 means "run the script, then (regardless of whether it succeeded) launch the
 game." That's deliberate — use `;`, not `&&`. If you're offline, or a
 release temporarily 404s, you still want the game to start.
+
+On CachyOS, `game-performance` (from `cachyos-gaming-meta`) is a wrapper
+around `%command%` that uses `power-profiles-daemon` to force the
+`performance` power profile — governor included, plus switching an active
+scx scheduler to its gaming profile if there is one — for as long as the
+game runs, then restores whatever profile was active before. It's not
+needed on other distros; drop it there.
 
 One prerequisite: run the **Setup** one-liner above at least once, normally,
 in an actual terminal, before wiring this into Steam. That first run is also
