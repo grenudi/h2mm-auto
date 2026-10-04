@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 # h2mm-auto: remove old CowboyBingus mods, install the latest ones.
-# No subcommands, no flags — just run it.
+# No subcommands needed — just run it. Optional: --verbose, --debug (see README).
 set -euo pipefail
+
+VERBOSE=0
+DEBUG=0
+for _arg in "$@"; do
+  case "$_arg" in
+    --verbose) VERBOSE=1 ;;
+    --debug)   VERBOSE=1; DEBUG=1 ;;
+  esac
+done
+unset _arg
+[ "$DEBUG" -eq 1 ] && set -x
 
 # ---- config ------------------------------------------------------------
 H2MM_REPO="v4n00/h2mm-cli"
@@ -9,11 +20,23 @@ H2MM_URL="https://raw.githubusercontent.com/${H2MM_REPO}/master/h2mm"
 SELF_URL="https://raw.githubusercontent.com/grenudi/h2mm-auto/main/h2mm-auto.sh"
 
 LOADER_REPO="CowboyBingus/BingusSharedLoader"
-LOADER_PATTERN='\.zip$'
+# Anchored to the exact "Word-Word-Word-vNN.zip" shape of the real asset, not
+# just "ends in .zip" — a release also ships a same-repo
+# "BingusSharedLoader-source-vNN.zip" (no hyphens between words) and a
+# SHA256SUMS.txt; a loose '\.zip$' matches that source zip too and only
+# happened to pick the right one by asset-list order, not by actually being
+# precise about it.
+LOADER_PATTERN='^Bingus-Shared-Loader-[^-]+\.zip$'
 
 MEGAPACK_REPO="CowboyBingus/VanillaPlusMegapack"
-MEGAPACK_PATTERN='Rows.*\.zip$'
-MEGAPACK_FLAGS='i'
+# As of v36 upstream discontinued the separate "Rows" package (its changelog:
+# "Discontinues the Rows package, since Know Your Constellation v4 has a
+# single layout; Rows users should switch to this pack") and now ships one
+# unified "Vanilla-Plus-Megapack-vNN.zip" with no "Rows" in the name at all —
+# hence the old 'Rows.*\.zip$' pattern matching nothing. Anchored the same
+# way as the loader pattern above, for the same reason (there's also a
+# "VanillaPlusMegapack-source-vNN.zip" to not accidentally match).
+MEGAPACK_PATTERN='^Vanilla-Plus-Megapack-[^-]+\.zip$'
 
 BIN_DIR="${H2MM_AUTO_HOME:-$HOME/.local/share/h2mm-auto}/bin"
 H2MM_BIN="$BIN_DIR/h2mm"
@@ -47,6 +70,12 @@ log()  { local a="${1^^}" b="${2:-}" c="${3:-}"; printf '%s  %s%s%s%s\n' "$HD2_W
 warn() { local a="${1^^}" b="${2:-}" c="${3:-}"; echo "!!  ${a}${b}${c^^}" >&2; }
 die()  { warn "$1" "${2:-}" "${3:-}"; exit 1; }
 
+# vlog()/debug(): plain, untouched by the theme/caps on purpose — these are
+# diagnostic output, not part of the normal run's narration. vlog needs
+# --verbose (or --debug, which implies it); debug needs --debug.
+vlog()  { [ "$VERBOSE" -eq 1 ] && printf '[verbose] %s\n' "$*" >&2; return 0; }
+debug() { [ "$DEBUG"   -eq 1 ] && printf '[debug] %s\n' "$*" >&2; return 0; }
+
 h2mm_run() { # <h2mm_bin> <args...> -> runs h2mm quietly.
   # h2mm logs almost everything (per-file "Removing ...", "Mod file ...
   # installed at ...", variant listings, prompts, ...) to stderr regardless
@@ -55,16 +84,36 @@ h2mm_run() { # <h2mm_bin> <args...> -> runs h2mm quietly.
   # (e.g. "install all variants?") gets the same default as pressing Enter,
   # instead of the script hanging on it.
   local bin="$1"; shift
+  debug "running: $bin $*"
+  if [ "$DEBUG" -eq 1 ]; then
+    # --debug wants to see everything h2mm itself prints, not just failures.
+    "$bin" "$@" </dev/null
+    return $?
+  fi
   local out status=0
   out="$("$bin" "$@" </dev/null 2>&1)" || status=$?
   [ "$status" -ne 0 ] && printf '%s\n' "$out" >&2
   return "$status"
 }
 
-github_latest_asset() { # <owner/repo> <name-regex> [regex-flags] -> url
-  curl -fsSL "https://api.github.com/repos/$1/releases/latest" |
-    jq -r --arg pat "$2" --arg flags "${3:-}" \
-      '[.assets[] | select(.name | test($pat; $flags))][0].browser_download_url // empty'
+github_latest_asset() { # <owner/repo> <name-regex> [regex-flags] -> url, or empty if none matched
+  local repo="$1" pat="$2" flags="${3:-}" api_url response url
+  api_url="https://api.github.com/repos/$repo/releases/latest"
+  vlog "checking latest release: $repo"
+  debug "GET $api_url"
+  if ! response="$(curl -fsSL "$api_url")"; then
+    debug "curl failed fetching $api_url (rate-limited by GitHub? no releases? network down?)"
+    return 0
+  fi
+  url="$(jq -r --arg pat "$pat" --arg flags "$flags" \
+    '[.assets[] | select(.name | test($pat; $flags))][0].browser_download_url // empty' \
+    <<< "$response")"
+  if [ -z "$url" ]; then
+    debug "no asset in $repo matched /$pat/$flags — assets in that release: $(jq -r '[.assets[].name] | join(", ")' <<< "$response" 2>/dev/null)"
+  else
+    vlog "matched: $(basename "$url")"
+  fi
+  echo "$url"
 }
 
 download() { # <url> <dest_dir> -> saved file path
@@ -73,6 +122,7 @@ download() { # <url> <dest_dir> -> saved file path
   mkdir -p "$dir"
   file="$dir/$(basename "$url")"
   log "acquiring asset: " "$(basename "$url")"
+  vlog "GET $url -> $file"
   curl -fsSL "$url" -o "$file"
   echo "$file"
 }
@@ -100,7 +150,7 @@ fetch_h2mm() {
 }
 
 fetch_loader()   { download "$(github_latest_asset "$LOADER_REPO" "$LOADER_PATTERN")" "$DOWNLOADS"; }
-fetch_megapack() { download "$(github_latest_asset "$MEGAPACK_REPO" "$MEGAPACK_PATTERN" "$MEGAPACK_FLAGS")" "$DOWNLOADS"; }
+fetch_megapack() { download "$(github_latest_asset "$MEGAPACK_REPO" "$MEGAPACK_PATTERN")" "$DOWNLOADS"; }
 
 mod_index_in_listing() { # <h2mm list output> <mod name> -> its index number, or nothing if not installed
   local listing="$1" name="$2" line
@@ -111,7 +161,16 @@ mod_index_in_listing() { # <h2mm list output> <mod name> -> its index number, or
 
 remove_previous_mods() { # <h2mm_bin>
   local bin="$1" listing
-  listing="$("$bin" list 2>/dev/null)" || { warn "recon sweep failed, skipping purge"; return 0; }
+  # On a brand-new machine, h2mm doesn't know where Helldivers 2 is installed
+  # yet, and THIS is the very first h2mm command we ever run — so it's the
+  # one that triggers h2mm's one-time "found it here, is that correct? (Y/n)"
+  # setup prompt. Stdin has to be /dev/null here too (same reasoning as
+  # h2mm_run), or that prompt silently blocks forever on a terminal that
+  # never shows it (its text goes out over stderr, which we discard below).
+  # An empty answer is what h2mm treats as "yes, that one" — same default as
+  # pressing Enter — so this just auto-accepts whatever it auto-detected
+  # instead of hanging.
+  listing="$("$bin" list </dev/null 2>/dev/null)" || { warn "recon sweep failed, skipping purge"; return 0; }
 
   local loader_index megapack_index
   loader_index="$(mod_index_in_listing "$listing" "$LOADER_NAME")"
@@ -149,8 +208,9 @@ main() {
   remove_previous_mods "$h2mm"
 
   section "REQUISITIONING ASSETS"
-  local loader;   loader="$(fetch_loader)"
-  local megapack; megapack="$(fetch_megapack)"
+  local loader megapack
+  loader="$(fetch_loader)"     || die "aborting — no loader asset found (rerun with --debug to see why)"
+  megapack="$(fetch_megapack)" || die "aborting — no megapack asset found (rerun with --debug to see why)"
   install_mod "$h2mm" "$loader"
   install_mod "$h2mm" "$megapack"
 

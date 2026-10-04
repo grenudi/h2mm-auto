@@ -1,14 +1,12 @@
 # h2mm-auto
 
-<img width="545" height="349" alt="image" src="https://github.com/user-attachments/assets/36239811-4432-4126-9fe0-7c7795690b7f" />
-
 A wrapper around [`h2mm-cli`](https://github.com/v4n00/h2mm-cli) that:
 
 - checks/acquires runtime dependencies (`curl`, `jq`, `unzip`)
 - pulls the latest `h2mm` script straight from v4n00/h2mm-cli's `master` branch
 - pulls the latest [BingusSharedLoader](https://github.com/CowboyBingus/BingusSharedLoader)
-  and [VanillaPlusMegapack](https://github.com/CowboyBingus/VanillaPlusMegapack) (Rows variant)
-  releases and installs them
+  and [VanillaPlusMegapack](https://github.com/CowboyBingus/VanillaPlusMegapack) releases and
+  installs them
 - by default, **removes old Bingus/Vanilla Plus mods first, then installs
   the latest of both** — zero flags needed
 
@@ -66,7 +64,7 @@ mkdir -p ~/.local/share/h2mm-auto && curl -fsSL https://raw.githubusercontent.co
 That single line: downloads the script to its permanent local path, makes
 it executable, adds the alias if it isn't already there, reloads your
 `.bashrc`, and runs the script directly (not via `hd2up`) for this first
-time — removing old Bingus mods and installing the latest loader + Rows
+time — removing old Bingus mods and installing the latest loader +
 megapack in one go.
 
 It calls the script by its full path instead of `hd2up` here on purpose:
@@ -81,7 +79,7 @@ there.
 
 Every new terminal session just has `hd2up` ready to go — running it does
 the whole thing: remove old Bingus/Vanilla Plus mods, fetch the latest
-loader and Rows megapack, install both.
+loader and megapack, install both.
 
 ```bash
 hd2up
@@ -91,6 +89,22 @@ hd2up
 `~/.local/share/h2mm-auto/h2mm-auto.sh` as-is — it does not check GitHub or
 update itself. To pull in script changes, re-run the one-liner from
 **Setup** above.
+
+## If something goes wrong: `--verbose` / `--debug`
+
+```bash
+hd2up --verbose   # extra lines: which GitHub release it checked, what matched, which URL it's downloading
+hd2up --debug     # all of the above, plus a full shell trace (set -x) and h2mm's own raw output
+```
+
+Normal runs are deliberately quiet (see **Running it from a Steam launch
+option** above for why), so if a step fails — most likely
+`!! NO MATCHING SUPPLY DROP LOCATED`, meaning a release's assets didn't
+match what the script expects — `--debug` is what tells you why: it prints
+the exact list of asset filenames GitHub actually returned for that
+release, so you can see at a glance whether the repo renamed something,
+dropped a variant, or GitHub just rate-limited the (unauthenticated)
+API call.
 
 ## Running it from a Steam launch option
 
