@@ -7,8 +7,9 @@ A wrapper around [`h2mm-cli`](https://github.com/v4n00/h2mm-cli) that:
 - pulls the latest [BingusSharedLoader](https://github.com/CowboyBingus/BingusSharedLoader)
   and [VanillaPlusMegapack](https://github.com/CowboyBingus/VanillaPlusMegapack) releases and
   installs them
-- by default, **removes old Bingus/Vanilla Plus mods first, then installs
-  the latest of both** — zero flags needed
+- compares your installed versions to the latest releases and, **only if
+  something is newer, removes the old mods and installs the latest of
+  both** — zero flags needed
 
 > **Note on the uninstall step:** it parses `h2mm list` output to find
 > Bingus/Vanilla-Plus entries automatically. That parsing is a best-effort
@@ -141,8 +142,26 @@ and every later run, including from the Steam launch option, reuses it
 silently. If you've already run `hd2up` at least once, you're already done —
 just paste the line above into **Properties → Launch Options** for the game.
 
-Worth knowing: on every single launch it still checks the mod repos for new
-releases and can re-download/reinstall mods (that part always talks to
-GitHub — it's the actual point of the script), so it adds a few seconds
-before the game window opens. What it does *not* do anymore on every launch
-is re-fetch its own code — see **Setup** above.
+Worth knowing: on every launch it first checks (read-only) which versions
+you have installed against the latest releases. If both match, it does
+nothing at all — nothing is downloaded or removed, so it adds well under a
+second. Only when a newer version exists does it download, remove the old
+mods and install the new ones, and it prints a line like
+`UPDATE ACQUIRED: Vanilla-Plus-Megapack-v37 -> Vanilla-Plus-Megapack-v38`.
+Downloads happen before anything is removed, so if a launch happens offline
+or GitHub hiccups, your installed mods are left exactly as they were.
+
+If you ever want to reinstall even though the versions match (say a game
+patch wiped the mod files), run `hd2up --force`.
+
+A Steam launch has no terminal to print to, so the output of the most recent
+run without a terminal is kept in a file you can read afterwards — this is
+the first place to look if mods aren't what you expect after launching:
+
+```bash
+cat ~/.local/share/h2mm-auto/last-run.log
+```
+
+(The script also clears `LD_LIBRARY_PATH` / `LD_PRELOAD` for itself, since
+Steam sets those for the game and they can break system `curl`/`unzip`
+when inherited. The game itself is not affected.)
