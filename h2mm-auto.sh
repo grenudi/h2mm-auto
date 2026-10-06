@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # h2mm-auto: remove old CowboyBingus mods, install the latest ones.
-# No subcommands needed — just run it. Optional: --verbose, --debug (see README).
+# No subcommands needed — just run it. Optional: --verbose, --debug, --force (see README).
 set -euo pipefail
+
+# Steam injects its own runtime libraries into every launch-option command
+# (LD_LIBRARY_PATH, and LD_PRELOAD for its overlay), and plain system tools
+# like curl or unzip can refuse to run against them. Only this script and
+# what it starts see this change — the game, launched afterwards by Steam
+# itself, is untouched.
+unset LD_LIBRARY_PATH LD_PRELOAD
 
 VERBOSE=0
 DEBUG=0
+FORCE=0
 for _arg in "$@"; do
   case "$_arg" in
+    --force)   FORCE=1 ;;
     --verbose) VERBOSE=1 ;;
     --debug)   VERBOSE=1; DEBUG=1 ;;
   esac
@@ -65,11 +74,24 @@ MEGAPACK_NAME="Vanilla-Plus-Megapack"
 FIRST_RUN_MARKER="$H2MM_AUTO_HOME/.first-run-done"
 if [ -e "$FIRST_RUN_MARKER" ]; then FIRST_RUN=0; else FIRST_RUN=1; fi
 
-# filled in by remove_previous_mods() with whatever was installed before
+# filled in by scan_installed_mods() with whatever was installed before
 # this run, so main() can tell the user when the freshly fetched asset is a
 # different version (see notify_update below).
 PREV_LOADER_VERSION=""
 PREV_MEGAPACK_VERSION=""
+LOADER_INDEX=""
+MEGAPACK_INDEX=""
+
+# With no terminal attached (a Steam launch option), everything we print
+# would vanish — so keep a copy of the last such run in a file you can read
+# afterwards. Still passes everything through to the original stderr too, so
+# pipes like `hd2up 2>&1 | less` keep working.
+LOG_FILE="$H2MM_AUTO_HOME/last-run.log"
+if [ ! -t 2 ]; then
+  mkdir -p "$H2MM_AUTO_HOME"
+  exec 2> >(tee "$LOG_FILE" >&2)
+  echo "[$(date '+%F %T')] h2mm-auto started without a terminal (e.g. a Steam launch option)" >&2
+fi
 
 # ---- Helldivers 2 theme: yellow ALL-CAPS headlines, 2-space-indented white steps --
 if [ -t 2 ]; then
@@ -159,7 +181,10 @@ download() { # <url> <dest_dir> -> saved file path
   file="$dir/$(basename "$url")"
   log "acquiring asset: " "$(basename "$url")"
   vlog "GET $url -> $file"
-  curl -fsSL "$url" -o "$file"
+  # `|| return 1` matters: this runs inside $(...) where bash switches
+  # `set -e` off, so without it a failed download would carry on and hand
+  # back the path of a file that was never saved.
+  curl -fsSL "$url" -o "$file" || { warn "download failed: " "$(basename "$url")"; return 1; }
   echo "$file"
 }
 
@@ -180,22 +205,26 @@ ensure_dependencies() {
 fetch_h2mm() {
   log "establishing uplink to h2mm-cli command"
   mkdir -p "$BIN_DIR"
-  curl -fsSL "$H2MM_URL" -o "$H2MM_BIN"
-  chmod +x "$H2MM_BIN"
+  # download beside the real file first, so a failed/partial download can
+  # never replace a working h2mm. (`|| return 1` for the same reason as in
+  # download(): this runs inside $(...), where `set -e` is off.)
+  curl -fsSL "$H2MM_URL" -o "$H2MM_BIN.new" || { rm -f "$H2MM_BIN.new"; warn "uplink to h2mm-cli failed"; return 1; }
+  chmod +x "$H2MM_BIN.new"
+  mv -f "$H2MM_BIN.new" "$H2MM_BIN"
   echo "$H2MM_BIN"
 }
-
-fetch_loader()   { download "$(github_latest_asset "$LOADER_REPO" "$LOADER_PATTERN")" "$DOWNLOADS"; }
-fetch_megapack() { download "$(github_latest_asset "$MEGAPACK_REPO" "$MEGAPACK_PATTERN")" "$DOWNLOADS"; }
 
 mod_entry_in_listing() { # <h2mm list output> <mod name> -> "<index>:<full label>", or nothing if not installed
   local listing="$1" name="$2" line
   line="$(grep -F -- "$name" <<< "$listing" | head -n1)"
   [ -n "$line" ] || return 0
-  printf '%s:%s\n' "$(grep -oE '[0-9]+' <<< "$line" | head -n1)" "${line#*] }"
+  # the label is just the word starting at the mod name, up to the next
+  # whitespace — h2mm pads its list lines with trailing spaces, which would
+  # otherwise make "same version" look like "different version".
+  printf '%s:%s\n' "$(grep -oE '[0-9]+' <<< "$line" | head -n1)" "$(grep -oE "${name}[^[:space:]]*" <<< "$line" | head -n1)"
 }
 
-remove_previous_mods() { # <h2mm_bin>
+scan_installed_mods() { # <h2mm_bin> -> READ-ONLY: fills LOADER_INDEX/MEGAPACK_INDEX and PREV_*_VERSION
   local bin="$1" listing
   # On a brand-new machine, h2mm doesn't know where Helldivers 2 is installed
   # yet, and THIS is the very first h2mm command we ever run — so it's the
@@ -203,28 +232,28 @@ remove_previous_mods() { # <h2mm_bin>
   # setup prompt (or, if auto-detection can't find it at all, a manual
   # "enter the path" prompt). On FIRST_RUN we let that reach the real
   # terminal so the user can actually answer it (stdin inherited, stderr
-  # not discarded) — guessing blind here, on a run that has no terminal to
-  # fall back on (like a Steam launch option), is exactly how an install can
-  # silently end up pointed nowhere real. Every run after the first keeps
-  # the old behavior: stdin /dev/null and stderr discarded, so an empty
-  # answer (same as pressing Enter, which h2mm treats as "yes") just
-  # confirms whatever it already knows, instead of hanging on a prompt that
-  # no one can see.
+  # not discarded). Every run after the first keeps stdin /dev/null and
+  # stderr discarded, so an empty answer (same as pressing Enter, which h2mm
+  # treats as "yes") just confirms whatever it already knows, instead of
+  # hanging on a prompt that no one can see.
   if [ "$FIRST_RUN" -eq 1 ]; then
-    listing="$("$bin" list)" || { warn "recon sweep failed, skipping purge"; return 0; }
+    listing="$("$bin" list)" || die "recon sweep failed, nothing was touched"
   else
-    listing="$("$bin" list </dev/null 2>/dev/null)" || { warn "recon sweep failed, skipping purge"; return 0; }
+    listing="$("$bin" list </dev/null 2>/dev/null)" || die "recon sweep failed, nothing was touched"
   fi
 
-  local loader_entry megapack_entry loader_index megapack_index
+  local loader_entry megapack_entry
   loader_entry="$(mod_entry_in_listing "$listing" "$LOADER_NAME")"
   megapack_entry="$(mod_entry_in_listing "$listing" "$MEGAPACK_NAME")"
-  loader_index="${loader_entry%%:*}"
-  megapack_index="${megapack_entry%%:*}"
+  LOADER_INDEX="${loader_entry%%:*}"
+  MEGAPACK_INDEX="${megapack_entry%%:*}"
   PREV_LOADER_VERSION="${loader_entry#*:}"
   PREV_MEGAPACK_VERSION="${megapack_entry#*:}"
+}
 
-  if [ -z "$loader_index" ] && [ -z "$megapack_index" ]; then
+purge_previous_mods() { # <h2mm_bin> -> removes whatever scan_installed_mods() found
+  local bin="$1"
+  if [ -z "$LOADER_INDEX" ] && [ -z "$MEGAPACK_INDEX" ]; then
     log "no legacy loadout detected — front is clear"
     return 0
   fi
@@ -232,7 +261,7 @@ remove_previous_mods() { # <h2mm_bin>
   # highest index first: uninstalling one reindexes the ones above it, so
   # working top-down keeps the remaining index still valid.
   local i
-  for i in $(printf '%s\n%s\n' "$loader_index" "$megapack_index" | grep -v '^$' | sort -rn); do
+  for i in $(printf '%s\n%s\n' "$LOADER_INDEX" "$MEGAPACK_INDEX" | grep -v '^$' | sort -rn); do
     log "purging asset #$i"
     h2mm_run "$bin" uninstall -i "$i" || die "purge failed on asset #$i"
   done
@@ -247,37 +276,65 @@ install_mod() { # <h2mm_bin> <zip_path>
   h2mm_run "$1" install "$2" || die "deployment failed: " "$(basename "$2")"
 }
 
+announce_updates() { # <new loader version> <new megapack version> -> notes any mod whose version changed
+  if [ -n "$PREV_LOADER_VERSION" ] && [ "$PREV_LOADER_VERSION" != "$1" ]; then
+    notify_update "$PREV_LOADER_VERSION" "$1"
+  fi
+  if [ -n "$PREV_MEGAPACK_VERSION" ] && [ "$PREV_MEGAPACK_VERSION" != "$2" ]; then
+    notify_update "$PREV_MEGAPACK_VERSION" "$2"
+  fi
+}
+
+mark_run_complete() {
+  mkdir -p "$H2MM_AUTO_HOME"
+  touch "$FIRST_RUN_MARKER"
+}
+
 # ---- entry point: the whole thing, top to bottom ---------------------------
+# Order matters: look first (read-only), compare, and only if there is
+# actually something newer do we download — and only once the downloads are
+# safely on disk do we remove anything.
 main() {
   section "DEMOCRACY DELIVERED"
   ensure_dependencies
 
-  local h2mm; h2mm="$(fetch_h2mm)"
+  local h2mm loader_url megapack_url new_loader new_megapack loader megapack
+  h2mm="$(fetch_h2mm)" || die "aborting — no uplink to h2mm-cli, nothing was touched"
 
-  section "PURGING OUTDATED LOADOUT"
-  remove_previous_mods "$h2mm"
+  section "SURVEYING THE FRONT"
+  scan_installed_mods "$h2mm"
+  loader_url="$(github_latest_asset "$LOADER_REPO" "$LOADER_PATTERN")"
+  [ -n "$loader_url" ] || die "aborting — no loader release found, nothing was touched (rerun with --debug to see why)"
+  megapack_url="$(github_latest_asset "$MEGAPACK_REPO" "$MEGAPACK_PATTERN")"
+  [ -n "$megapack_url" ] || die "aborting — no megapack release found, nothing was touched (rerun with --debug to see why)"
+  new_loader="$(basename "$loader_url" .zip)"
+  new_megapack="$(basename "$megapack_url" .zip)"
+
+  if [ "$FORCE" -eq 0 ] && [ "$PREV_LOADER_VERSION" = "$new_loader" ] && [ "$PREV_MEGAPACK_VERSION" = "$new_megapack" ]; then
+    log "already at latest: " "$new_loader, $new_megapack"
+    log "nothing to do"
+    mark_run_complete
+    section "MISSION SUCCESS"
+    return 0
+  fi
+
+  announce_updates "$new_loader" "$new_megapack"
 
   section "REQUISITIONING ASSETS"
-  local loader megapack new_loader_version new_megapack_version
-  loader="$(fetch_loader)"     || die "aborting — no loader asset found (rerun with --debug to see why)"
-  megapack="$(fetch_megapack)" || die "aborting — no megapack asset found (rerun with --debug to see why)"
-  new_loader_version="$(basename "$loader" .zip)"
-  new_megapack_version="$(basename "$megapack" .zip)"
-  if [ -n "$PREV_LOADER_VERSION" ] && [ "$PREV_LOADER_VERSION" != "$new_loader_version" ]; then
-    notify_update "$PREV_LOADER_VERSION" "$new_loader_version"
-  fi
-  if [ -n "$PREV_MEGAPACK_VERSION" ] && [ "$PREV_MEGAPACK_VERSION" != "$new_megapack_version" ]; then
-    notify_update "$PREV_MEGAPACK_VERSION" "$new_megapack_version"
-  fi
+  loader="$(download "$loader_url" "$DOWNLOADS")"     || die "aborting — loader download failed, nothing was touched"
+  megapack="$(download "$megapack_url" "$DOWNLOADS")" || die "aborting — megapack download failed, nothing was touched"
+
+  section "PURGING OUTDATED LOADOUT"
+  purge_previous_mods "$h2mm"
+
+  section "DEPLOYING REINFORCEMENTS"
   install_mod "$h2mm" "$loader"
   install_mod "$h2mm" "$megapack"
 
-  section "MISSION SUCCESS"
   # only reached on a fully successful run — so a failed first run still
-  # gets to try again interactively next time, instead of being locked into
-  # silent mode having never actually succeeded once.
-  mkdir -p "$H2MM_AUTO_HOME"
-  touch "$FIRST_RUN_MARKER"
+  # gets to try again interactively next time.
+  mark_run_complete
+  section "MISSION SUCCESS"
 }
 
 main
