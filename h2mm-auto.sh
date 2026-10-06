@@ -38,15 +38,38 @@ MEGAPACK_REPO="CowboyBingus/VanillaPlusMegapack"
 # "VanillaPlusMegapack-source-vNN.zip" to not accidentally match).
 MEGAPACK_PATTERN='^Vanilla-Plus-Megapack-[^-]+\.zip$'
 
-BIN_DIR="${H2MM_AUTO_HOME:-$HOME/.local/share/h2mm-auto}/bin"
+H2MM_AUTO_HOME="${H2MM_AUTO_HOME:-$HOME/.local/share/h2mm-auto}"
+BIN_DIR="$H2MM_AUTO_HOME/bin"
 H2MM_BIN="$BIN_DIR/h2mm"
 DOWNLOADS="${H2MM_AUTO_DOWNLOADS:-$HOME/Downloads}"
 DEPS=(curl jq unzip)
 
 # names we already know, straight from the release filenames — used to find
-# them again in `h2mm list` output (see mod_index_in_listing below).
+# them again in `h2mm list` output (see mod_entry_in_listing below).
 LOADER_NAME="Bingus-Shared-Loader"
 MEGAPACK_NAME="Vanilla-Plus-Megapack"
+
+# FIRST_RUN gates whether h2mm's own prompts (first-time "is this your HD2
+# folder? (Y/n)", or a manual path entry if auto-detection can't find it at
+# all, or the variant-picker on install) go to the real terminal, or get
+# silently auto-accepted. Only the very first run — ever, or after deleting
+# this marker — talks to the user; every run after that (including from a
+# Steam launch option, which has no terminal to talk to) is silent, the same
+# as it's always been. Previously EVERY run auto-accepted blind, which is
+# fine once h2mm already knows where the game is — but on an environment
+# where auto-detection comes back different or empty (seen from a Steam
+# launch instead of a normal terminal), an unattended empty answer can steer
+# h2mm onto the wrong directory (or a blank one), and the mods it "installs"
+# after that aren't going anywhere real — which is exactly what silently
+# wiped out an install here before.
+FIRST_RUN_MARKER="$H2MM_AUTO_HOME/.first-run-done"
+if [ -e "$FIRST_RUN_MARKER" ]; then FIRST_RUN=0; else FIRST_RUN=1; fi
+
+# filled in by remove_previous_mods() with whatever was installed before
+# this run, so main() can tell the user when the freshly fetched asset is a
+# different version (see notify_update below).
+PREV_LOADER_VERSION=""
+PREV_MEGAPACK_VERSION=""
 
 # ---- Helldivers 2 theme: yellow ALL-CAPS headlines, 2-space-indented white steps --
 if [ -t 2 ]; then
@@ -70,21 +93,34 @@ log()  { local a="${1^^}" b="${2:-}" c="${3:-}"; printf '%s  %s%s%s%s\n' "$HD2_W
 warn() { local a="${1^^}" b="${2:-}" c="${3:-}"; echo "!!  ${a}${b}${c^^}" >&2; }
 die()  { warn "$1" "${2:-}" "${3:-}"; exit 1; }
 
+# notify_update(): same style as log(), for the one spot that needs two raw
+# (not all-capsed) tokens instead of log()'s one — the old and new version
+# strings either side of the arrow.
+notify_update() { # <old version string> <new version string>
+  printf '%s  %s%s%s%s%s\n' "$HD2_WHITE" "UPDATE ACQUIRED: " "$1" " -> " "$2" "$HD2_RESET" >&2
+}
+
 # vlog()/debug(): plain, untouched by the theme/caps on purpose — these are
 # diagnostic output, not part of the normal run's narration. vlog needs
 # --verbose (or --debug, which implies it); debug needs --debug.
 vlog()  { [ "$VERBOSE" -eq 1 ] && printf '[verbose] %s\n' "$*" >&2; return 0; }
 debug() { [ "$DEBUG"   -eq 1 ] && printf '[debug] %s\n' "$*" >&2; return 0; }
 
-h2mm_run() { # <h2mm_bin> <args...> -> runs h2mm quietly.
+h2mm_run() { # <h2mm_bin> <args...> -> runs h2mm quietly (except on FIRST_RUN).
   # h2mm logs almost everything (per-file "Removing ...", "Mod file ...
   # installed at ...", variant listings, prompts, ...) to stderr regardless
-  # of severity, so we swallow it and only print it back out if the command
-  # actually failed. Stdin is always /dev/null so an interactive prompt
-  # (e.g. "install all variants?") gets the same default as pressing Enter,
-  # instead of the script hanging on it.
+  # of severity, so on every run after the first we swallow it and only
+  # print it back out if the command actually failed, with stdin fed from
+  # /dev/null so an interactive prompt (e.g. "install all variants?") gets
+  # the same default as pressing Enter, instead of the script hanging on it.
   local bin="$1"; shift
   debug "running: $bin $*"
+  if [ "$FIRST_RUN" -eq 1 ]; then
+    # first run ever: let h2mm talk to the real terminal and let the user
+    # answer anything it asks, instead of guessing on their behalf.
+    "$bin" "$@"
+    return $?
+  fi
   if [ "$DEBUG" -eq 1 ]; then
     # --debug wants to see everything h2mm itself prints, not just failures.
     "$bin" "$@" </dev/null
@@ -152,11 +188,11 @@ fetch_h2mm() {
 fetch_loader()   { download "$(github_latest_asset "$LOADER_REPO" "$LOADER_PATTERN")" "$DOWNLOADS"; }
 fetch_megapack() { download "$(github_latest_asset "$MEGAPACK_REPO" "$MEGAPACK_PATTERN")" "$DOWNLOADS"; }
 
-mod_index_in_listing() { # <h2mm list output> <mod name> -> its index number, or nothing if not installed
+mod_entry_in_listing() { # <h2mm list output> <mod name> -> "<index>:<full label>", or nothing if not installed
   local listing="$1" name="$2" line
   line="$(grep -F -- "$name" <<< "$listing" | head -n1)"
   [ -n "$line" ] || return 0
-  grep -oE '[0-9]+' <<< "$line" | head -n1
+  printf '%s:%s\n' "$(grep -oE '[0-9]+' <<< "$line" | head -n1)" "${line#*] }"
 }
 
 remove_previous_mods() { # <h2mm_bin>
@@ -164,17 +200,29 @@ remove_previous_mods() { # <h2mm_bin>
   # On a brand-new machine, h2mm doesn't know where Helldivers 2 is installed
   # yet, and THIS is the very first h2mm command we ever run — so it's the
   # one that triggers h2mm's one-time "found it here, is that correct? (Y/n)"
-  # setup prompt. Stdin has to be /dev/null here too (same reasoning as
-  # h2mm_run), or that prompt silently blocks forever on a terminal that
-  # never shows it (its text goes out over stderr, which we discard below).
-  # An empty answer is what h2mm treats as "yes, that one" — same default as
-  # pressing Enter — so this just auto-accepts whatever it auto-detected
-  # instead of hanging.
-  listing="$("$bin" list </dev/null 2>/dev/null)" || { warn "recon sweep failed, skipping purge"; return 0; }
+  # setup prompt (or, if auto-detection can't find it at all, a manual
+  # "enter the path" prompt). On FIRST_RUN we let that reach the real
+  # terminal so the user can actually answer it (stdin inherited, stderr
+  # not discarded) — guessing blind here, on a run that has no terminal to
+  # fall back on (like a Steam launch option), is exactly how an install can
+  # silently end up pointed nowhere real. Every run after the first keeps
+  # the old behavior: stdin /dev/null and stderr discarded, so an empty
+  # answer (same as pressing Enter, which h2mm treats as "yes") just
+  # confirms whatever it already knows, instead of hanging on a prompt that
+  # no one can see.
+  if [ "$FIRST_RUN" -eq 1 ]; then
+    listing="$("$bin" list)" || { warn "recon sweep failed, skipping purge"; return 0; }
+  else
+    listing="$("$bin" list </dev/null 2>/dev/null)" || { warn "recon sweep failed, skipping purge"; return 0; }
+  fi
 
-  local loader_index megapack_index
-  loader_index="$(mod_index_in_listing "$listing" "$LOADER_NAME")"
-  megapack_index="$(mod_index_in_listing "$listing" "$MEGAPACK_NAME")"
+  local loader_entry megapack_entry loader_index megapack_index
+  loader_entry="$(mod_entry_in_listing "$listing" "$LOADER_NAME")"
+  megapack_entry="$(mod_entry_in_listing "$listing" "$MEGAPACK_NAME")"
+  loader_index="${loader_entry%%:*}"
+  megapack_index="${megapack_entry%%:*}"
+  PREV_LOADER_VERSION="${loader_entry#*:}"
+  PREV_MEGAPACK_VERSION="${megapack_entry#*:}"
 
   if [ -z "$loader_index" ] && [ -z "$megapack_index" ]; then
     log "no legacy loadout detected — front is clear"
@@ -192,8 +240,10 @@ remove_previous_mods() { # <h2mm_bin>
 
 install_mod() { # <h2mm_bin> <zip_path>
   log "deploying asset: " "$(basename "$2")"
-  # feeding an empty stdin (see h2mm_run) makes the "which variants?" prompt
-  # default to installing all of them, same as pressing Enter.
+  # after the first run (see h2mm_run), feeding an empty stdin makes the
+  # "which variants?" prompt default to installing all of them, same as
+  # pressing Enter. On FIRST_RUN the prompt instead reaches the real
+  # terminal, so the user picks for themselves the one time it's asked.
   h2mm_run "$1" install "$2" || die "deployment failed: " "$(basename "$2")"
 }
 
@@ -208,13 +258,26 @@ main() {
   remove_previous_mods "$h2mm"
 
   section "REQUISITIONING ASSETS"
-  local loader megapack
+  local loader megapack new_loader_version new_megapack_version
   loader="$(fetch_loader)"     || die "aborting — no loader asset found (rerun with --debug to see why)"
   megapack="$(fetch_megapack)" || die "aborting — no megapack asset found (rerun with --debug to see why)"
+  new_loader_version="$(basename "$loader" .zip)"
+  new_megapack_version="$(basename "$megapack" .zip)"
+  if [ -n "$PREV_LOADER_VERSION" ] && [ "$PREV_LOADER_VERSION" != "$new_loader_version" ]; then
+    notify_update "$PREV_LOADER_VERSION" "$new_loader_version"
+  fi
+  if [ -n "$PREV_MEGAPACK_VERSION" ] && [ "$PREV_MEGAPACK_VERSION" != "$new_megapack_version" ]; then
+    notify_update "$PREV_MEGAPACK_VERSION" "$new_megapack_version"
+  fi
   install_mod "$h2mm" "$loader"
   install_mod "$h2mm" "$megapack"
 
   section "MISSION SUCCESS"
+  # only reached on a fully successful run — so a failed first run still
+  # gets to try again interactively next time, instead of being locked into
+  # silent mode having never actually succeeded once.
+  mkdir -p "$H2MM_AUTO_HOME"
+  touch "$FIRST_RUN_MARKER"
 }
 
 main
